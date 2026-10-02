@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>五子棋</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; user-select:none; -webkit-tap-highlight-color:transparent; }
+  body { background:#0f172a; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100vh; padding:12px; overflow:hidden; touch-action:manipulation; }
+  .title { font-size:24px; letter-spacing:8px; color:#fbbf24; margin-bottom:14px; font-weight:bold; }
+  .board-wrap { position:relative; width:min(92vw, calc(92vh - 140px), 520px); height:min(92vw, calc(92vh - 140px), 520px); border-radius:12px; overflow:hidden; box-shadow:0 20px 50px rgba(0,0,0,0.6); }
+  #board { width:100%; height:100%; display:block; touch-action:none; }
+  .overlay { position:absolute; top:0; left:0; width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; z-index:100; }
+  .menu-overlay { background:rgba(0,0,0,0.55); }
+  .menu-overlay h2 { font-size:22px; color:#fbbf24; margin-bottom:6px; }
+  .overlay button { -webkit-appearance:none; appearance:none; padding:13px 44px; font-size:17px; font-weight:bold; border:none; border-radius:999px; color:#fff; cursor:pointer; min-width:180px; touch-action:manipulation; display:block; margin:0 auto; }
+  #btnPvP { background:linear-gradient(135deg,#6366f1,#8b5cf6); box-shadow:0 8px 20px rgba(99,102,241,0.5); }
+  #btnPvE { background:linear-gradient(135deg,#f59e0b,#ef4444); box-shadow:0 8px 20px rgba(239,68,68,0.5); }
+  #btnRestart { background:linear-gradient(135deg,#10b981,#059669); box-shadow:0 8px 20px rgba(16,185,129,0.5); }
+  #btnBack { background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.3); }
+  .result-overlay { background:rgba(0,0,0,0.75); display:none; }
+  .result-overlay h2 { font-size:26px; color:#fff; margin-bottom:10px; }
+  .status { margin-top:14px; font-size:15px; color:#cbd5e1; height:24px; display:flex; align-items:center; gap:8px; }
+  .dot { display:inline-block; width:14px; height:14px; border-radius:50%; }
+  .white { background:#fff; }
+  .black { background:#1a1a1a; border:1px solid #555; }
+</style>
+</head>
+<body>
+
+<h1 class="title">五 子 棋</h1>
+<div class="board-wrap">
+  <canvas id="board" width="600" height="600"></canvas>
+
+  <div class="overlay menu-overlay" id="menu">
+    <h2>选择模式</h2>
+    <button id="btnPvP" onclick="startGame('pvp')">双人对战</button>
+    <button id="btnPvE" onclick="startGame('pve')">人机对战</button>
+  </div>
+
+  <div class="overlay result-overlay" id="result">
+    <h2 id="resultText">黑棋获胜</h2>
+    <button id="btnRestart" onclick="restartGame()">再来一局</button>
+    <button id="btnBack" onclick="backToMenu()">返回菜单</button>
+  </div>
+</div>
+<div class="status" id="status"></div>
+
+<script>
+  var SIZE = 15, CELL = 40, PAD = 20, W = 600;
+  var EMPTY = 0, WHITE = 1, BLACK = 2;
+  var board = [], cur = BLACK, mode = null, over = false, thinking = false;
+  var cvs = document.getElementById('board');
+  var ctx = cvs.getContext('2d');
+  var statusEl = document.getElementById('status');
+  var resultEl = document.getElementById('result');
+
+  function init() {
+    board = [];
+    for (var i = 0; i < SIZE; i++) {
+      var row = [];
+      for (var j = 0; j < SIZE; j++) row.push(EMPTY);
+      board.push(row);
+    }
+  }
+
+  function drawBoard() {
+    ctx.fillStyle = '#e0b884'; ctx.fillRect(0, 0, W, W);
+    ctx.strokeStyle = '#6b4a2b'; ctx.lineWidth = 1.4;
+    for (var i = 0; i < SIZE; i++) {
+      var p = PAD + i * CELL;
+      ctx.beginPath(); ctx.moveTo(PAD, p); ctx.lineTo(W - PAD, p); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p, PAD); ctx.lineTo(p, W - PAD); ctx.stroke();
+    }
+  }
+
+  function drawStone(col, row, player) {
+    var x = PAD + col * CELL, y = PAD + row * CELL, r = CELL * 0.44;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = player === WHITE ? '#fff' : '#1a1a1a'; ctx.fill();
+    if (player === WHITE) { ctx.strokeStyle = '#a0a0a0'; ctx.stroke(); }
+  }
+
+  function checkWin(col, row, player) {
+    var dirs = [[1,0],[0,1],[1,1],[1,-1]];
+    for (var d = 0; d < dirs.length; d++) {
+      var dx = dirs[d][0], dy = dirs[d][1], count = 1;
+      for (var i = 1; i < 5; i++) {
+        var nx = col + dx*i, ny = row + dy*i;
+        if (nx<0||nx>=SIZE||ny<0||ny>=SIZE) break;
+        if (board[ny][nx] === player) count++; else break;
+      }
+      for (var j = 1; j < 5; j++) {
+        var nx2 = col - dx*j, ny2 = row - dy*j;
+        if (nx2<0||nx2>=SIZE||ny2<0||ny2>=SIZE) break;
+        if (board[ny2][nx2] === player) count++; else break;
+      }
+      if (count >= 5) return true;
+    }
+    return false;
+  }
+
+  function updateStatus() {
+    if (over) return;
+    var name = cur === WHITE ? '白棋' : '黑棋';
+    var who = (mode === 'pve') ? (cur === BLACK ? '（你）' : '（电脑）') : '';
+    statusEl.innerHTML = '<span class="dot ' + (cur === WHITE ? 'white' : 'black') + '"></span>' + name + who + ' 回合';
+  }
+
+  function endGame(winner) {
+    over = true;
+    var text = winner === 'draw' ? '平局！' : (winner === BLACK ? '黑棋获胜！' : '白棋获胜！');
+    document.getElementById('resultText').textContent = text;
+    resultEl.style.display = 'flex';
+  }
+
+  function evaluate(x, y, player) {
+    var score = 0, dirs = [[1,0],[0,1],[1,1],[1,-1]];
+    for (var d = 0; d < dirs.length; d++) {
+      var dx = dirs[d][0], dy = dirs[d][1], count = 1, block = 0;
+      for (var i = 1; i < 5; i++) {
+        var nx = x + dx*i, ny = y + dy*i;
+        if (nx<0||nx>=SIZE||ny<0||ny>=SIZE) { block++; break; }
+        if (board[ny][nx] === player) count++;
+        else if (board[ny][nx] === EMPTY) break;
+        else { block++; break; }
+      }
+      for (var j = 1; j < 5; j++) {
+        var nx2 = x - dx*j, ny2 = y - dy*j;
+        if (nx2<0||nx2>=SIZE||ny2<0||ny2>=SIZE) { block++; break; }
+        if (board[ny2][nx2] === player) count++;
+        else if (board[ny2][nx2] === EMPTY) break;
+        else { block++; break; }
+      }
+      if (count >= 5) score += 10000000;
+      else if (count === 4) { if (block === 0) score += 500000; else if (block === 1) score += 50000; }
+      else if (count === 3) { if (block === 0) score += 30000; else if (block === 1) score += 3000; }
+      else if (count === 2) { if (block === 0) score += 2000; else if (block === 1) score += 200; }
+      else if (count === 1) { if (block === 0) score += 100; else if (block === 1) score += 10; }
+    }
+    return score;
+  }
+
+  function hasNeighbor(x, y, range) {
+    for (var dy = -range; dy <= range; dy++) {
+      for (var dx = -range; dx <= range; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        var nx = x + dx, ny = y + dy;
+        if (nx>=0 && nx<SIZE && ny>=0 && ny<SIZE && board[ny][nx] !== EMPTY) return true;
+      }
+    }
+    return false;
+  }
+
+  function aiMove() {
+    if (over) return;
+    thinking = true;
+    statusEl.textContent = '电脑思考中…';
+    setTimeout(function() {
+      var best = -1, move = null, any = false;
+      for (var r = 0; r < SIZE; r++) for (var c = 0; c < SIZE; c++) if (board[r][c] !== EMPTY) any = true;
+      if (!any) move = { x: 7, y: 7 };
+      else {
+        for (var y = 0; y < SIZE; y++) {
+          for (var x = 0; x < SIZE; x++) {
+            if (board[y][x] !== EMPTY) continue;
+            if (!hasNeighbor(x, y, 2)) continue;
+            var s = evaluate(x, y, WHITE) * 1.1 + evaluate(x, y, BLACK) * 1.5;
+            if (s > best) { best = s; move = { x: x, y: y }; }
+          }
+        }
+      }
+      if (!move) {
+        for (var yy = 0; yy < SIZE; yy++) for (var xx = 0; xx < SIZE; xx++) if (board[yy][xx] === EMPTY) { move = { x: xx, y: yy }; break; }
+      }
+      if (!move) { thinking = false; return; }
+      board[move.y][move.x] = WHITE; drawStone(move.x, move.y, WHITE);
+      if (checkWin(move.x, move.y, WHITE)) { thinking = false; endGame(WHITE); return; }
+      var full = true;
+      for (var r2 = 0; r2 < SIZE; r2++) for (var c2 = 0; c2 < SIZE; c2++) if (board[r2][c2] === EMPTY) full = false;
+      if (full) { thinking = false; endGame('draw'); return; }
+      cur = BLACK; thinking = false; updateStatus();
+    }, 300);
+  }
+
+  cvs.onclick = function(e) {
+    if (over || thinking || !mode) return;
+    var rect = cvs.getBoundingClientRect();
+    var sx = cvs.width / rect.width, sy = cvs.height / rect.height;
+    var x = (e.clientX - rect.left) * sx, y = (e.clientY - rect.top) * sy;
+    var col = Math.round((x - PAD) / CELL), row = Math.round((y - PAD) / CELL);
+    if (col < 0 || col >= SIZE || row < 0 || row >= SIZE || board[row][col] !== EMPTY) return;
+    if (mode === 'pve' && cur !== BLACK) return;
+
+    board[row][col] = cur; drawStone(col, row, cur);
+    if (checkWin(col, row, cur)) { endGame(cur); return; }
+    var full = true;
+    for (var r = 0; r < SIZE; r++) for (var c = 0; c < SIZE; c++) if (board[r][c] === EMPTY) full = false;
+    if (full) { endGame('draw'); return; }
+    cur = cur === BLACK ? WHITE : BLACK;
+    updateStatus();
+    if (mode === 'pve' && cur === WHITE) aiMove();
+  };
+
+  function startGame(m) {
+    mode = m; over = false; thinking = false; cur = BLACK;
+    init(); drawBoard(); updateStatus();
+    document.getElementById('menu').style.display = 'none';
+    resultEl.style.display = 'none';
+  }
+
+  function restartGame() { if (mode) startGame(mode); }
+
+  function backToMenu() {
+    over = false; mode = null; thinking = false;
+    init(); drawBoard();
+    resultEl.style.display = 'none';
+    document.getElementById('menu').style.display = 'flex';
+    statusEl.textContent = '请选择模式';
+  }
+
+  init(); drawBoard(); statusEl.textContent = '请选择模式';
+</script>
+</body>
+</html>
